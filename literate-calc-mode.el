@@ -72,6 +72,11 @@ recalculating once the buffer contents have settled."
   :group 'literate-calc-mode
   :type 'integer)
 
+(defcustom literate-calc-mode-center-results nil
+  "Center calculation results."
+  :group 'literate-calc-mode
+  :type 'boolean)
+
 (defcustom literate-calc-mode-max-buffer-size 0
   "The maximum buffer size for which to activate literate-calc-minor-mode.
 
