@@ -33,11 +33,11 @@
 (require 'calc)
 (require 'calc-prog)
 (require 'cl-lib)
-(require 'dash)
+;; (require 'dash)
 (require 'ob)
 (require 'org-element)
 (require 'rx)
-(require 's)
+;; (require 's)
 (require 'subr-x)
 (require 'thingatpt)
 
@@ -80,10 +80,15 @@ recalculating once the buffer contents have settled."
   :group 'literate-calc-mode
   :type 'boolean)
 
-(defcustom literate-calc-mode-max-buffer-size 0
-  "The maximum buffer size for which to activate literate-calc-minor-mode.
+(defcustom literate-calc-mode-prefix "→ "
+  "Result prefix."
+  :group 'literate-calc-mode
+  :type 'string)
 
-If set to a non-zero value, literate-calc-mode will abort in
+(defcustom literate-calc-mode-max-buffer-size 0
+  "The maximum buffer size for which to activate `literate-calc-minor-mode'.
+
+If set to a non-zero value, `literate-calc-mode' will abort in
 buffers larger than this, as measured by `buffer-size'."
   :group 'literate-calc-mode
   :type 'integer)
@@ -107,7 +112,7 @@ buffers larger than this, as measured by `buffer-size'."
              '(latex-fragment latex-environment))))
 
 (defvar-local literate-calc-minor-mode nil)
-(defvar-local literate-calc--scope (list))
+(defvar-local literate-calc--scope nil)
 (defvar-local literate-calc--idle-timer nil)
 
 (defvar literate-calc-radix-change-hook nil
@@ -132,19 +137,19 @@ buffers larger than this, as measured by `buffer-size'."
 (defconst literate-calc--reserved-names-rx
   (rx (eval `(or . ,(cl-loop for fn in (apropos-internal (rx string-start "calcFunc-")
                                                          #'functionp)
-                             collect (s-chop-prefix "calcFunc-" (symbol-name fn))))))
+                             collect (string-remove-prefix "calcFunc-" (symbol-name fn))))))
   "Regexp matching reserved function names.")
 
-(defmacro literate-calc--without-hooks (&rest body)
-  "Run BODY with deactivated edit hooks."
-  `(let ((hooks-active (or (equal major-mode #'literate-calc-mode)
-                           literate-calc-minor-mode)))
-     (when hooks-active
-       ;; Temporarily disable the edit hooks while we edit the buffer.
-       (literate-calc--exit))
-     ,@body
-     (when hooks-active
-       (literate-calc--setup-hooks))))
+;; (defmacro literate-calc--without-hooks (&rest body)
+;;   "Run BODY with deactivated edit hooks."
+;;   `(let ((hooks-active (or (equal major-mode #'literate-calc-mode)
+;;                            literate-calc-minor-mode)))
+;;      (when hooks-active
+;;        ;; Temporarily disable the edit hooks while we edit the buffer.
+;;        (literate-calc--exit))
+;;      ,@body
+;;      (when hooks-active
+;;        (literate-calc--setup-hooks))))
 
 (defun literate-calc--eval (value)
   "Wrapper around `(calc-eval VALUE)' with extra args."
@@ -165,9 +170,18 @@ buffers larger than this, as measured by `buffer-size'."
   "Return the output format for RESULT with the optional NAME.
 
 NAME should be an empty string if RESULT is not bound."
-  (if (string-empty-p name)
-      (format " => %s" result)
-    (format " => %s: %s" name result)))
+  (concat
+   (propertize " "
+               'display
+               '(space :align-to center)
+               ;; '(space :align-to (80 . width))
+               )
+   (propertize " => "
+               'display
+               (propertize literate-calc-mode-prefix 'face font-lock-comment-face))
+   (if (string-empty-p name) "" (format "%s: " name))
+   result
+   ))
 
 (defun literate-calc--insert-result (name result)
   "Insert NAME & RESULT at the end of the current line."
@@ -177,14 +191,10 @@ NAME should be an empty string if RESULT is not bound."
 
 (defun literate-calc--create-overlay (name result)
   "Create an overlay for NAME & RESULT on the current line."
-  (let* ((o (make-overlay (line-beginning-position)
-                          (line-end-position)
-                          nil
-                          t
-                          t)))
-    (overlay-put o 'literate-calc t)
-    (overlay-put o 'evaporate t)
-    (overlay-put o 'after-string
+  (alet (make-overlay (line-beginning-position) (line-end-position) nil t t)
+    (overlay-put it 'literate-calc t)
+    (overlay-put it 'evaporate t)
+    (overlay-put it 'after-string
                  (propertize
                   (literate-calc--format-result name result)
                   'face 'font-lock-comment-face
@@ -250,13 +260,10 @@ Returns a list of (NAME RESULT) if the result is bound to a name."
 
 ;;;###autoload
 (defun literate-calc-clear-overlays ()
-  "Remove all literate-calc-mode overlays in the current buffer."
+  "Remove all `literate-calc-mode' overlays in the current buffer."
   (interactive)
-  (remove-overlays (point-min)
-                   (point-max)
-                   'literate-calc
-                   t)
-  (setq-local literate-calc--scope (list)))
+  (remove-overlays nil nil 'literate-calc t)
+  (setq-local literate-calc--scope nil))
 
 (defun literate-calc--add-binding (binding)
   "Add BINDING to the buffer-local variable scope.
@@ -281,9 +288,9 @@ shadowing."
                      (line-end-position)
                      'literate-calc
                      t)
-    (let ((binding (literate-calc--process-line (thing-at-point 'line)
-                                                literate-calc--scope)))
-      (literate-calc--add-binding binding))))
+    (alet (literate-calc--process-line (thing-at-point 'line)
+                                       literate-calc--scope)
+      (literate-calc--add-binding it))))
 
 ;;;###autoload
 (cl-defun literate-calc-eval-buffer (&optional (buffer (current-buffer)))
@@ -323,35 +330,31 @@ not the buffer as a whole."
 (defun literate-calc-insert-results ()
   "Insert results into buffer instead of creating overlays."
   (interactive)
-  (unless (string-empty-p (buffer-string))
-    (literate-calc--without-hooks
-     (save-excursion
-       (goto-char (point-min))
-       (let ((buffer-line-count (count-lines (point-min) (point-max)))
-             (line-number 1))
-         (while (<= line-number buffer-line-count)
-           (unless (run-hook-with-args-until-success 'literate-calc-mode-inhibit-line-functions)
-             (let ((binding (literate-calc--process-line (thing-at-point 'line)
-                                                         literate-calc--scope
-                                                         t)))
-               (literate-calc--add-binding binding)))
-           (setq line-number (1+ line-number))
-           (forward-line 1)))))))
+  (unless (zerop (buffer-size))
+    (with-silent-modifications
+      (save-excursion
+        (goto-char (point-min))
+        (let ((buffer-line-count (count-lines (point-min) (point-max)))
+              (line-number 1))
+          (while (<= line-number buffer-line-count)
+            (unless (run-hook-with-args-until-success 'literate-calc-mode-inhibit-line-functions)
+              (let ((binding (literate-calc--process-line (thing-at-point 'line)
+                                                          literate-calc--scope
+                                                          t)))
+                (literate-calc--add-binding binding)))
+            (setq line-number (1+ line-number))
+            (forward-line 1)))))))
 
 ;;;###autoload
 (defun literate-calc-remove-results (start end)
   "Remove inserted results from buffer between START and END."
   (interactive "r")
-  (unless (string-empty-p (buffer-string))
-    (literate-calc--without-hooks
-     (save-excursion
-       (let* ((start (if (region-active-p)
-                         start
-                       (point-min)))
-              (end (if (region-active-p)
-                       end
-                     (point-max)))
-              ;; NOTE We are shortening the buffer while looping, so
+  (setq start (if (region-active-p) start) (point-min))
+  (setq end (if (region-active-p) end) (point-max))
+  (unless (zerop (buffer-size))
+    (with-silent-modifications
+      (save-excursion
+        (let (;; NOTE We are shortening the buffer while looping, so
               ;; `end' actually creeps further towards the end with
               ;; every deletion. We can assume that we don't alter the
               ;; number of lines, so we just bound the search on the
@@ -362,14 +365,14 @@ not the buffer as a whole."
               ;; removes an empty line off the end, but doesn't affect
               ;; non-empty lines at the end.
               (end-line (line-number-at-pos (- end 1))))
-         (goto-char start)
-         (while (re-search-forward literate-calc--result
-                                   (save-excursion
-                                     (goto-char 1)
-                                     (line-end-position end-line))
-                                   t)
-           (replace-match "" nil nil))))
-     (setq-local literate-calc--scope (list)))))
+          (goto-char start)
+          (while (re-search-forward literate-calc--result
+                                    (save-excursion
+                                      (goto-char 1)
+                                      (line-end-position end-line))
+                                    t)
+            (replace-match "" nil nil))))
+      (setq-local literate-calc--scope (list)))))
 
 (defun literate-calc--async-eval-buffer (_beg _end _pre-change-length)
   "Schedule `literate-calc-eval-buffer' after some idle time.
@@ -377,11 +380,12 @@ not the buffer as a whole."
 The exact timeout is determined by `literate-calc-mode-idle-time'."
   (when literate-calc--idle-timer
     (cancel-timer literate-calc--idle-timer))
-  (setq literate-calc--idle-timer
-        (run-with-idle-timer literate-calc-mode-idle-time
-                             nil
-                             #'literate-calc-eval-buffer
-                             (current-buffer))))
+  (when literate-calc-mode-idle-time
+    (setq literate-calc--idle-timer
+          (run-with-idle-timer literate-calc-mode-idle-time
+                               nil
+                               #'literate-calc-eval-buffer
+                               (current-buffer)))))
 
 (defun literate-calc--setup-hooks ()
   "Set up after-edit hooks & run first evaluation."
@@ -407,7 +411,7 @@ The exact timeout is determined by `literate-calc-mode-idle-time'."
         `((,identifier-regexp . (1 font-lock-variable-name-face)))))
 
 (defun literate-calc--should-start-p ()
-  "Return non-nil if literate-calc-mode should start up."
+  "Return non-nil if `literate-calc-mode' should start up."
   (or (zerop literate-calc-mode-max-buffer-size)
       (<= (buffer-size) literate-calc-mode-max-buffer-size)))
 
@@ -421,7 +425,7 @@ The exact timeout is determined by `literate-calc-mode-idle-time'."
 ;;;###autoload
 (define-minor-mode literate-calc-minor-mode
   "Minor mode to evaluate calc expressions inline."
-  :lighter "lit-calc"
+  :lighter " lit-calc"
   (if literate-calc-minor-mode
       (if (literate-calc--should-start-p)
           (literate-calc--setup-hooks)
@@ -457,17 +461,12 @@ This function is called by `org-babel-execute-src-block'"
     (with-temp-buffer
       (insert full-body)
       (literate-calc-insert-results)
-      (if (equal 'output result-type)
-          ;; Return output.
+      (if (eq 'output result-type)
           (buffer-string)
-        ;; Return value.
-        (progn
-          (goto-char (point-max))
-          (when-let ((found (re-search-backward literate-calc--result
-                                                (point-min)
-                                                t)))
-            (buffer-substring-no-properties (+ found (length " => "))
-                                            (line-end-position))))))))
+        (goto-char (point-max))
+        (awhen (re-search-backward literate-calc--result nil t)
+          (buffer-substring-no-properties (+ it (length " => "))
+                                          (line-end-position)))))))
 
 (provide 'literate-calc-mode)
 
